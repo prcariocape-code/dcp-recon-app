@@ -6,12 +6,10 @@ from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
 import time
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="DCP-RECON Web", page_icon="🛰️")
+# --- CONFIGURAÇÃO ---
+st.set_page_config(page_title="DCP-RECON Pro", page_icon="🚀")
+st.title("🚀 DCP-RECON: Automação Total")
 
-st.title("🛰️ SISTEMA DCP-RECON v3.0")
-
-# --- CONEXÃO COM GOOGLE SHEETS ---
 def conectar_google():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds_dict = st.secrets["gcp_service_account"].to_dict()
@@ -19,73 +17,103 @@ def conectar_google():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
     return gspread.authorize(creds)
 
-# --- INTERFACE LATERAL ---
-st.sidebar.header("Configurações")
-raio_km = st.sidebar.slider("Raio de Busca (KM)", 1, 50, 15)
-planilha_grupos = st.sidebar.text_input("Nome Planilha Grupos", "DCP_Grupos")
-planilha_respostas = st.sidebar.text_input("Nome Planilha Respostas", "DCP_Respostas")
+# --- CONFIGURAÇÃO DE NOMES ---
+NOME_PLANILHA_RESPOSTAS = "DCP_Respostas"
+NOME_PLANILHA_GRUPOS = "DCP_Grupos"
+NOME_PLANILHA_DESTINO = "DCP_CADASTRO_GERAL"
 
 try:
     gc = conectar_google()
-    # Carregar dados iniciais para o menu
-    df_candidatos = pd.DataFrame(gc.open(planilha_respostas).sheet1.get_all_records())
     
-    if not df_candidatos.empty:
-        st.subheader("📋 Seleção de Candidato")
-        # Criar menu de seleção com os nomes da planilha
-        lista_nomes = df_candidatos['Nome Completo'].tolist()
-        nome_selecionado = st.selectbox("Quem você deseja processar?", lista_nomes)
+    # 1. Carrega Respostas
+    sh_respostas = gc.open(NOME_PLANILHA_RESPOSTAS)
+    wks_respostas = sh_respostas.sheet1
+    df_respostas = pd.DataFrame(wks_respostas.get_all_records())
+
+    if not df_respostas.empty:
+        if 'Status' not in df_respostas.columns:
+            st.error("Erro: A coluna 'Status' não foi encontrada na planilha de Respostas.")
+            st.stop()
         
-        # Filtrar apenas o candidato escolhido
-        cand = df_candidatos[df_candidatos['Nome Completo'] == nome_selecionado].iloc[0]
-        
-        if st.button("🔍 ENCONTRAR MELHOR GRUPO"):
-            with st.spinner(f"Calculando para {nome_selecionado}..."):
-                df_grupos = pd.DataFrame(gc.open(planilha_grupos).sheet1.get_all_records())
+        pendentes = df_respostas[df_respostas['Status'].astype(str).str.strip() == ""]
+
+        if not pendentes.empty:
+            st.subheader("📋 Selecione o Candidato")
+            lista_nomes = pendentes['Nome Completo'].tolist()
+            nome_selecionado = st.selectbox("Quem deseja processar?", lista_nomes)
+            
+            # Localiza índice da linha original
+            idx_original = df_respostas[df_respostas['Nome Completo'] == nome_selecionado].index[0] + 2
+            cand = pendentes[pendentes['Nome Completo'] == nome_selecionado].iloc[0]
+
+            if st.button("🔍 CALCULAR MELHOR OPÇÃO"):
+                sh_grupos = gc.open(NOME_PLANILHA_GRUPOS)
+                df_grupos = pd.DataFrame(sh_grupos.sheet1.get_all_records())
                 
-                geolocator = Nominatim(user_agent="dcp_recon_v3")
+                geolocator = Nominatim(user_agent="dcp_v5_auto")
                 loc_cand = geolocator.geocode(cand['Endereço Completo'])
                 
                 if loc_cand:
                     ponto_cand = (loc_cand.latitude, loc_cand.longitude)
                     sugestoes = []
 
-                    for _, grupo in df_grupos.iterrows():
-                        # REGRA DE VAGAS
-                        if int(grupo['Membros Atuais']) >= int(grupo['Capacidade Máxima']):
-                            continue
-
-                        # REGRA DE PERFIL
-                        match = False
-                        perfil_c = str(cand['Perfil']).strip()
-                        perfil_g = str(grupo['Perfil']).strip()
-
-                        if perfil_c == "Casais" and perfil_g == "Casais":
-                            match = True
-                        elif perfil_c in ["Homens", "Mulheres"]:
-                            if perfil_g == perfil_c or perfil_g == "Misto":
-                                match = True
-                        elif perfil_c == "Misto" and perfil_g == "Misto":
-                            match = True
-                        
-                        if match:
-                            loc_g = geolocator.geocode(grupo['Endereço'])
-                            if loc_g:
-                                d = geodesic(ponto_cand, (loc_g.latitude, loc_g.longitude)).km
-                                if d <= raio_km:
-                                    sugestoes.append({"Grupo": grupo['Nome do Grupo'], "Dist": d, "Lider": grupo['Líder']})
-                            time.sleep(0.5)
+                    for _, g in df_grupos.iterrows():
+                        if int(g['Membros Atuais']) < int(g['Capacidade Máxima']):
+                            # Filtro de Perfil
+                            p_c = str(cand['Perfil']).strip()
+                            p_g = str(g['Perfil']).strip()
+                            if p_c == p_g or p_g == "Misto":
+                                loc_g = geolocator.geocode(g['Endereço'])
+                                if loc_g:
+                                    dist = geodesic(ponto_cand, (loc_g.latitude, loc_g.longitude)).km
+                                    if dist <= raio_km:
+                                        sugestoes.append({"Grupo": g['Nome do Grupo'], "Dist": dist, "Lider": g['Líder']})
+                                time.sleep(0.5)
 
                     if sugestoes:
-                        top = sorted(sugestoes, key=lambda x: x['Dist'])[0]
-                        st.success(f"✅ Melhor opção para **{nome_selecionado}**")
-                        st.info(f"📍 Grupo: **{top['Grupo']}**\n\n📏 Distância: {top['Dist']:.2f} km\n\n👤 Líder: {top['Lider']}")
+                        melhor = sorted(sugestoes, key=lambda x: x['Dist'])[0]
+                        st.session_state['resultado'] = melhor
+                        st.success(f"🎯 Sugestão: {melhor['Grupo']} (a {melhor['Dist']:.2f} km)")
                     else:
-                        st.warning("Nenhum grupo compatível encontrado no raio selecionado.")
+                        st.warning("Nenhum grupo compatível no raio definido.")
                 else:
-                    st.error("Endereço do candidato não localizado pelo GPS.")
+                    st.error("Endereço do candidato não localizado.")
+
+            # --- BOTÃO DE CONFIRMAÇÃO ---
+            if 'resultado' in st.session_state:
+                res = st.session_state['resultado']
+                if st.button(f"✅ CONFIRMAR ENTRADA NO GRUPO: {res['Grupo']}"):
+                    with st.spinner("Registrando nos sistemas..."):
+                        # A. Abre Planilha de Destino
+                        sh_dest = gc.open(NOME_PLANILHA_DESTINO)
+                        
+                        try:
+                            # Tenta abrir a aba do grupo, se não existir, cria uma nova
+                            try:
+                                wks_dest = sh_dest.worksheet(res['Grupo'])
+                            except gspread.exceptions.WorksheetNotFound:
+                                wks_dest = sh_dest.add_worksheet(title=res['Grupo'], rows="100", cols="10")
+                                wks_dest.append_row(["Data Registro", "Nome", "Endereço", "Perfil"])
+                            
+                            # B. Adiciona o Candidato na aba do grupo
+                            data_hoje = time.strftime("%d/%m/%Y")
+                            wks_dest.append_row([data_hoje, cand['Nome Completo'], cand['Endereço Completo'], cand['Perfil']])
+                            
+                            # C. Marca Status como OK na planilha de entrada
+                            col_status = df_respostas.columns.get_loc('Status') + 1
+                            wks_respostas.update_cell(idx_original, col_status, "OK")
+                            
+                            st.balloons()
+                            st.success(f"Sucesso! {nome_selecionado} registrado em '{res['Grupo']}'.")
+                            del st.session_state['resultado']
+                            time.sleep(2)
+                            st.rerun()
+                        except Exception as e_dest:
+                            st.error(f"Erro ao salvar na aba: {e_dest}")
+        else:
+            st.info("✅ Tudo limpo! Não há candidatos pendentes.")
     else:
         st.warning("A planilha de respostas está vazia.")
 
 except Exception as e:
-    st.error(f"Erro de conexão ou de dados: {e}")
+    st.error(f"Erro Geral: {e}")
