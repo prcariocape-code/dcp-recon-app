@@ -40,7 +40,8 @@ if st.button("🔍 PROCESSAR NOVO CANDIDATO"):
             if df_candidatos.empty:
                 st.error("A planilha de respostas está vazia!")
             else:
-                cand = df_candidatos.iloc[-1]
+                nome_selecionado = st.selectbox("Selecione o candidato para processar:", df_candidatos['Nome Completo'].tolist())
+cand = df_candidatos[df_candidatos['Nome Completo'] == nome_selecionado].iloc[0]
                 st.write(f"### Analisando: {cand['Nome Completo']} ({cand['Perfil']})")
                 
                 geolocator = Nominatim(user_agent="dcp_recon_final")
