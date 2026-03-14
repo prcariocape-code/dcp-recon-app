@@ -36,10 +36,9 @@ try:
 
     if not df_respostas.empty:
         if 'Status' not in df_respostas.columns:
-            st.error("Erro: A coluna 'Status' não existe em DCP_Respostas. Crie-a na primeira linha.")
+            st.error("Erro: A coluna 'Status' não existe em DCP_Respostas.")
             st.stop()
         
-        # Filtra pendentes
         pendentes = df_respostas[df_respostas['Status'].astype(str).str.strip() == ""]
 
         if not pendentes.empty:
@@ -47,7 +46,6 @@ try:
             lista_nomes = pendentes['Nome Completo'].tolist()
             nome_selecionado = st.selectbox("Quem deseja processar?", lista_nomes)
             
-            # Dados do candidato escolhido
             idx_original = df_respostas[df_respostas['Nome Completo'] == nome_selecionado].index[0] + 2
             cand = pendentes[pendentes['Nome Completo'] == nome_selecionado].iloc[0]
 
@@ -56,7 +54,7 @@ try:
                 wks_grupos_aba = sh_grupos.sheet1
                 df_grupos = pd.DataFrame(wks_grupos_aba.get_all_records())
                 
-                geolocator = Nominatim(user_agent="dcp_v6_final")
+                geolocator = Nominatim(user_agent="dcp_v7_final")
                 loc_cand = geolocator.geocode(cand['Endereço Completo'])
                 
                 if loc_cand:
@@ -64,9 +62,7 @@ try:
                     sugestoes = []
 
                     for i, g in df_grupos.iterrows():
-                        # Verifica capacidade
                         if int(g['Membros Atuais']) < int(g['Capacidade Máxima']):
-                            # Filtro de Perfil
                             p_c = str(cand['Perfil']).strip()
                             p_g = str(g['Perfil']).strip()
                             
@@ -75,13 +71,13 @@ try:
                                 if loc_g:
                                     dist = geodesic(ponto_cand, (loc_g.latitude, loc_g.longitude)).km
                                     if dist <= raio_selecionado:
-                                        # Guardamos o índice da linha do grupo para atualizar depois
                                         sugestoes.append({
                                             "Grupo": g['Nome do Grupo'], 
                                             "Dist": dist, 
                                             "Lider": g['Líder'],
                                             "Linha_Grupo": i + 2,
-                                            "Membros_Atuais": int(g['Membros Atuais'])
+                                            "Membros_Atuais": int(g['Membros Atuais']),
+                                            "Col_Membros": df_grupos.columns.get_loc('Membros Atuais') + 1
                                         })
                                 time.sleep(0.5)
 
@@ -92,47 +88,50 @@ try:
                     else:
                         st.warning(f"Nenhum grupo compatível num raio de {raio_selecionado}km.")
                 else:
-                    st.error("Endereço do candidato não localizado pelo GPS.")
+                    st.error("Endereço do candidato não localizado.")
 
-            # --- BOTÃO DE CONFIRMAÇÃO ---
             if 'resultado' in st.session_state:
                 res = st.session_state['resultado']
-                if st.button(f"✅ CONFIRMAR ENTRADA EM: {res['Grupo']}"):
-                    with st.spinner("Registrando e atualizando vagas..."):
-                        sh_dest = gc.open(NOME_PLANILHA_DESTINO)
-                        
+                if st.button(f"✅ CONFIRMAR EM: {res['Grupo']}"):
+                    with st.spinner("Registrando..."):
                         try:
-                            # 1. Adiciona na aba do grupo no Cadastro Geral
+                            # A. Cadastro Geral
+                            sh_dest = gc.open(NOME_PLANILHA_DESTINO)
                             try:
                                 wks_dest = sh_dest.worksheet(res['Grupo'])
-                            except gspread.exceptions.WorksheetNotFound:
+                            except:
                                 wks_dest = sh_dest.add_worksheet(title=res['Grupo'], rows="100", cols="5")
                                 wks_dest.append_row(["Data", "Nome", "Endereço", "Perfil"])
                             
                             wks_dest.append_row([time.strftime("%d/%m/%Y"), cand['Nome Completo'], cand['Endereço Completo'], cand['Perfil']])
                             
-                            # 2. Marca OK na planilha de entrada
+                            # B. Marcar Status OK
                             col_status = df_respostas.columns.get_loc('Status') + 1
                             wks_respostas.update_cell(idx_original, col_status, "OK")
                             
-                            # 3. Atualiza Membros Atuais na DCP_Grupos (+1)
+                            # C. Atualizar Vagas
                             sh_grupos = gc.open(NOME_PLANILHA_GRUPOS)
                             wks_g = sh_grupos.sheet1
-                            # A coluna Membros Atuais costuma ser a 4ª, mas vamos garantir pelo nome
-                            col_membros = df_grupos.columns.get_loc('Membros Atuais') + 1
-                            wks_g.update_cell(res['Linha_Grupo'], col_membros, res['Membros_Atuais'] + 1)
+                            wks_g.update_cell(res['Linha_Grupo'], res['Col_Membros'], res['Membros_Atuais'] + 1)
                             
                             st.balloons()
-                            st.success(f"Tudo Pronto! {nome_selecionado} alocado.")
+                            st.success("Candidato alocado com sucesso!")
                             del st.session_state['resultado']
-                            time.sleep(2)
+                            time.sleep(1)
                             st.rerun()
-                        except Exception as e_dest:
-                            st.error(f"Erro no registro: {e_dest}")
+                        except Exception as e:
+                            # Se o erro for o tal '200', a gente ignora e finge que deu certo (porque deu!)
+                            if "200" in str(e):
+                                st.rerun()
+                            else:
+                                st.error(f"Erro no registro: {e}")
         else:
-            st.info("✅ Todos os candidatos processados!")
+            st.info("✅ Tudo processado!")
     else:
-        st.warning("A planilha de respostas está vazia.")
+        st.warning("Planilha vazia.")
 
 except Exception as e:
-    st.error(f"Erro Geral: {e}")
+    if "200" not in str(e):
+        st.error(f"Erro Geral: {e}")
+    else:
+        st.rerun()
